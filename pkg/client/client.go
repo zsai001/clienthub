@@ -56,6 +56,8 @@ func New(cfg *config.ClientConfig, logger *zap.Logger) *Client {
 }
 
 func (c *Client) Run(ctx context.Context) error {
+	c.ctx = ctx
+
 	conn, err := net.DialTimeout("tcp", c.cfg.ServerAddr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("connect to server: %w", err)
@@ -74,10 +76,10 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("register: %w", err)
 	}
 
-	// Start local proxy listeners for forward rules
+	// Start local proxy listeners for static forward rules from config
 	for _, fwd := range c.cfg.Forward {
 		fwd := fwd
-		go c.startForwardProxy(ctx, fwd)
+		c.addForward(fwd.ListenAddr, fwd.RemoteClient, fwd.RemoteService, fwd.Protocol)
 	}
 
 	// Start heartbeat
@@ -178,6 +180,12 @@ func (c *Client) readLoop(ctx context.Context) error {
 			c.handleClose(msg)
 		case proto.MsgHeartbeat:
 			// ignore heartbeat echo
+		case proto.MsgAddForward:
+			c.handleAddForward(msg)
+		case proto.MsgRemoveForward:
+			c.handleRemoveForward(msg)
+		case proto.MsgListForwards:
+			c.handleListForwards(msg)
 		default:
 			c.logger.Debug("unhandled message", zap.String("type", msg.Type.String()))
 		}
