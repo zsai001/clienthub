@@ -1,0 +1,16 @@
+# Client B: exposes MySQL and forwards to Client A's web service
+server_addr: "127.0.0.1:7900"
+client_name: "client-b"
+secret: "my-super-secret-key"
+log_level: "info"
+
+expose:
+  - name: "mysql"
+    local_addr: "127.0.0.1:3306"
+    protocol: "tcp"
+
+forward:
+  - remote_client: "client-a"
+    remote_service: "web"
+    listen_addr: "127.0.0.1:18080"
+    protocol: "tcp"

@@ -1,0 +1,5 @@
+listen_addr: ":7900"
+udp_addr: ":7901"
+admin_addr: ":7902"
+secret: "my-super-secret-key"
+log_level: "info"
