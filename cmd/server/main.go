@@ -26,7 +26,10 @@ func main() {
 	logger := newLogger(cfg.LogLevel)
 	defer logger.Sync()
 
-	srv := server.New(cfg, logger)
+	srv, err := server.New(cfg, logger)
+	if err != nil {
+		log.Fatalf("init server: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

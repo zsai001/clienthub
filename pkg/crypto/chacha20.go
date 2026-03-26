@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,13 +14,14 @@ import (
 )
 
 const (
-	KeySize   = chacha20poly1305.KeySize // 32 bytes
+	KeySize   = chacha20poly1305.KeySize   // 32 bytes
 	NonceSize = chacha20poly1305.NonceSizeX // 24 bytes for XChaCha20
 	SaltSize  = 16
 )
 
 type Cipher struct {
-	key []byte
+	key  []byte
+	aead cipher.AEAD // cached, reused across calls
 }
 
 func DeriveKey(password string, salt []byte) []byte {
@@ -38,48 +40,38 @@ func NewCipher(key []byte) (*Cipher, error) {
 	if len(key) != KeySize {
 		return nil, fmt.Errorf("invalid key size: got %d, want %d", len(key), KeySize)
 	}
-	return &Cipher{key: key}, nil
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, fmt.Errorf("create AEAD: %w", err)
+	}
+	return &Cipher{key: key, aead: aead}, nil
 }
 
 func NewCipherFromPassword(password string, salt []byte) *Cipher {
 	key := DeriveKey(password, salt)
-	return &Cipher{key: key}
+	aead, _ := chacha20poly1305.NewX(key)
+	return &Cipher{key: key, aead: aead}
 }
 
 func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.NewX(c.key)
-	if err != nil {
-		return nil, fmt.Errorf("create AEAD: %w", err)
-	}
-
 	nonce := make([]byte, NonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
-
 	// nonce || ciphertext+tag
-	ciphertext := aead.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	return c.aead.Seal(nonce, nonce, plaintext, nil), nil
 }
 
 func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 	if len(data) < NonceSize {
 		return nil, errors.New("ciphertext too short")
 	}
-
-	aead, err := chacha20poly1305.NewX(c.key)
-	if err != nil {
-		return nil, fmt.Errorf("create AEAD: %w", err)
-	}
-
 	nonce := data[:NonceSize]
 	ciphertext := data[NonceSize:]
-
-	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := c.aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
-
 	return plaintext, nil
 }
 

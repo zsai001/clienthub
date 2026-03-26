@@ -1,0 +1,5 @@
+module CLibClientHub {
+    header "libclienthub.h"
+    link "clienthub"
+    export *
+}

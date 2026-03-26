@@ -13,6 +13,7 @@ type ServerConfig struct {
 	AdminAddr  string `yaml:"admin_addr"`
 	Secret     string `yaml:"secret"`
 	LogLevel   string `yaml:"log_level"`
+	StorePath  string `yaml:"store_path"`
 }
 
 type ExposeService struct {
@@ -48,6 +49,7 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		UDPAddr:    ":7901",
 		AdminAddr:  ":7902",
 		LogLevel:   "info",
+		StorePath:  "clienthub-store.json",
 	}
 	if err := loadYAML(path, cfg); err != nil {
 		return nil, fmt.Errorf("load server config: %w", err)

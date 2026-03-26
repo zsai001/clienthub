@@ -32,9 +32,15 @@ const (
 	MsgKickClient   MsgType = 0x0D
 	MsgResponse     MsgType = 0x0E
 	MsgTunnelFail   MsgType = 0x0F
-	MsgAddForward   MsgType = 0x10
+	MsgAddForward    MsgType = 0x10
 	MsgRemoveForward MsgType = 0x11
-	MsgListForwards MsgType = 0x12
+	MsgListForwards  MsgType = 0x12
+	MsgPushConfig    MsgType = 0x13 // server -> client: push stored expose+forward rules
+	MsgAddExpose     MsgType = 0x14 // admin -> server: add expose rule for a client
+	MsgRemoveExpose  MsgType = 0x15 // admin -> server: remove expose rule
+	MsgListExpose    MsgType = 0x16 // admin -> server: list expose rules
+	MsgSpeedTest     MsgType = 0x17 // server -> client: speed probe (payload = random data)
+	MsgSpeedResult   MsgType = 0x18 // client -> server: speed result
 )
 
 func (m MsgType) String() string {
@@ -57,6 +63,12 @@ func (m MsgType) String() string {
 		MsgAddForward:    "ADD_FORWARD",
 		MsgRemoveForward: "REMOVE_FORWARD",
 		MsgListForwards:  "LIST_FORWARDS",
+		MsgPushConfig:    "PUSH_CONFIG",
+		MsgAddExpose:     "ADD_EXPOSE",
+		MsgRemoveExpose:  "REMOVE_EXPOSE",
+		MsgListExpose:    "LIST_EXPOSE",
+		MsgSpeedTest:     "SPEED_TEST",
+		MsgSpeedResult:   "SPEED_RESULT",
 	}
 	if name, ok := names[m]; ok {
 		return name
@@ -238,6 +250,55 @@ func ReadMessageFromBytes(data []byte) (*Message, error) {
 		SessionID: sessionID,
 		Payload:   payload,
 	}, nil
+}
+
+// ExposeRule describes a service a client exposes locally.
+type ExposeRule struct {
+	Name      string `json:"name"`
+	LocalAddr string `json:"local_addr"`
+	Protocol  string `json:"protocol"`
+}
+
+// PushConfigPayload is sent by the server to a client after auth to apply stored rules.
+type PushConfigPayload struct {
+	Expose  []ExposeRule  `json:"expose"`
+	Forward []ForwardInfo `json:"forward"`
+}
+
+// AddExposePayload is sent by hubctl to add an expose rule for a client on the server.
+type AddExposePayload struct {
+	ClientName string     `json:"client_name"`
+	Rule       ExposeRule `json:"rule"`
+}
+
+// RemoveExposePayload removes an expose rule by client + service name.
+type RemoveExposePayload struct {
+	ClientName  string `json:"client_name"`
+	ServiceName string `json:"service_name"`
+}
+
+// ExposeListEntry is one row in the list-expose output.
+type ExposeListEntry struct {
+	ClientName string     `json:"client_name"`
+	Rule       ExposeRule `json:"rule"`
+}
+
+// ListClientsPayload is the optional payload for MsgListClients.
+type ListClientsPayload struct {
+	SpeedTest bool `json:"speed_test"` // if true, server measures RTT+throughput for each client
+}
+
+// SpeedResultPayload is returned by the client after receiving a MsgSpeedTest probe.
+type SpeedResultPayload struct {
+	RecvBytes      int64 `json:"recv_bytes"`
+	RecvDurationMs int64 `json:"recv_duration_ms"` // time from first byte to last byte on client side
+}
+
+// ClientSpeedInfo extends ClientInfo with measured RTT and throughput.
+type ClientSpeedInfo struct {
+	ClientInfo
+	RTTMs          int64 `json:"rtt_ms"`          // -1 = not measured
+	ThroughputKBps int64 `json:"throughput_kbps"` // -1 = not measured
 }
 
 func EncodeJSON(v any) ([]byte, error) {
