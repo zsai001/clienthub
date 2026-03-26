@@ -189,23 +189,30 @@ if [[ "$COMPONENT" == "all" && -d "${EXTRACTED_DIR}/examples" ]]; then
   fi
 fi
 
-# Check PATH
+# Auto-add to PATH if not present
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
-  echo ""
-  echo "  NOTE: ${INSTALL_DIR} is not in your PATH."
   SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
   case "$SHELL_NAME" in
-    zsh)  RC_FILE="~/.zshrc" ;;
-    bash) RC_FILE="~/.bashrc" ;;
-    fish) RC_FILE="~/.config/fish/config.fish" ;;
-    *)    RC_FILE="~/.profile" ;;
+    zsh)  RC_FILE="${HOME}/.zshrc" ;;
+    bash) RC_FILE="${HOME}/.bashrc" ;;
+    fish) RC_FILE="${HOME}/.config/fish/config.fish" ;;
+    *)    RC_FILE="${HOME}/.profile" ;;
   esac
-  echo "  Add it with:"
+
   echo ""
-  if [[ "$SHELL_NAME" == "fish" ]]; then
-    echo "    fish_add_path ${INSTALL_DIR}"
+  echo "==> Adding ${INSTALL_DIR} to PATH in ${RC_FILE} ..."
+
+  MARKER="# Added by ClientHub installer"
+  if ! grep -qF "$MARKER" "$RC_FILE" 2>/dev/null; then
+    if [[ "$SHELL_NAME" == "fish" ]]; then
+      echo -e "\n${MARKER}\nfish_add_path ${INSTALL_DIR}" >> "$RC_FILE"
+    else
+      echo -e "\n${MARKER}\nexport PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$RC_FILE"
+    fi
+    echo "  PATH updated in ${RC_FILE}"
+    echo "  Run 'source ${RC_FILE}' or open a new terminal to use ClientHub."
   else
-    echo "    echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${RC_FILE} && source ${RC_FILE}"
+    echo "  PATH entry already exists in ${RC_FILE}, skipping."
   fi
 fi
 
