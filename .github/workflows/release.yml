@@ -150,13 +150,17 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create stable release
+      - name: Create or update stable release
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release create "$TAG" \
-            --title "ClientHub $TAG" \
-            --generate-notes \
-            --latest \
-            artifacts/*
+          if gh release view "$TAG" &>/dev/null; then
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "ClientHub $TAG" \
+              --generate-notes \
+              --latest \
+              artifacts/*
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

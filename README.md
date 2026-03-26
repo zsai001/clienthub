@@ -25,23 +25,23 @@ A Go-based port forwarding service that enables secure client-to-client traffic 
 
 ```bash
 # Stable channel (default)
-curl -fsSL https://raw.githubusercontent.com/cltx/clienthub/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zsai001/clienthub/main/install.sh | bash
 
 # Dev channel (latest development build)
-curl -fsSL https://raw.githubusercontent.com/cltx/clienthub/main/install.sh | bash -s -- --channel dev
+curl -fsSL https://raw.githubusercontent.com/zsai001/clienthub/main/install.sh | bash -s -- --channel dev
 
 # Install only a specific component
-curl -fsSL https://raw.githubusercontent.com/cltx/clienthub/main/install.sh | bash -s -- --component client
+curl -fsSL https://raw.githubusercontent.com/zsai001/clienthub/main/install.sh | bash -s -- --component client
 ```
 
 ### One-line Install (Windows PowerShell)
 
 ```powershell
 # Stable channel
-irm https://raw.githubusercontent.com/cltx/clienthub/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/zsai001/clienthub/main/install.ps1 | iex
 
 # Dev channel
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/cltx/clienthub/main/install.ps1))) -Channel dev
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zsai001/clienthub/main/install.ps1))) -Channel dev
 ```
 
 ### Install Options
