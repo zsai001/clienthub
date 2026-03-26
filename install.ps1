@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "cltx/clienthub"
+$Repo = "zsai001/clienthub"
 
 function Get-Arch {
     $arch = $env:PROCESSOR_ARCHITECTURE

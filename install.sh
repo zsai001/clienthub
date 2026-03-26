@@ -2,7 +2,7 @@
 # ClientHub installer / updater
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/cltx/clienthub/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zsai001/clienthub/main/install.sh | bash
 #   curl -fsSL ... | bash -s -- --channel dev
 #   curl -fsSL ... | bash -s -- --channel stable --install-dir /usr/local/bin
 #
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO="cltx/clienthub"
+REPO="zsai001/clienthub"
 CHANNEL="stable"
 INSTALL_DIR="${HOME}/.local/bin"
 COMPONENT="all"
