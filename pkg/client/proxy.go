@@ -4,21 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
-	"github.com/cltx/clienthub/config"
 	"github.com/cltx/clienthub/pkg/proto"
 	"go.uber.org/zap"
 )
 
-func (c *Client) startForwardProxy(ctx context.Context, fwd config.ForwardRule) {
-	ln, err := net.Listen("tcp", fwd.ListenAddr)
-	if err != nil {
-		c.logger.Error("forward proxy listen failed",
-			zap.String("addr", fwd.ListenAddr),
-			zap.Error(err))
-		return
-	}
+func (c *Client) runForwardProxy(ctx context.Context, ln net.Listener, fwd *activeForward) {
 	defer ln.Close()
 
 	c.logger.Info("forward proxy listening",
@@ -36,6 +29,7 @@ func (c *Client) startForwardProxy(ctx context.Context, fwd config.ForwardRule) 
 		if err != nil {
 			select {
 			case <-ctx.Done():
+				c.logger.Info("forward proxy stopped", zap.String("listen", fwd.ListenAddr))
 				return
 			default:
 				c.logger.Debug("proxy accept error", zap.Error(err))
@@ -46,16 +40,12 @@ func (c *Client) startForwardProxy(ctx context.Context, fwd config.ForwardRule) 
 	}
 }
 
-func (c *Client) handleForwardConn(ctx context.Context, conn net.Conn, fwd config.ForwardRule) {
+func (c *Client) handleForwardConn(ctx context.Context, conn net.Conn, fwd *activeForward) {
 	defer conn.Close()
 
-	sessionID, err := c.openTunnel(fwd.RemoteClient, fwd.RemoteService, fwd.Protocol)
+	sessionID, err := c.openTunnel(ctx, fwd.RemoteClient, fwd.RemoteService, fwd.Protocol)
 	if err != nil {
 		c.logger.Error("open tunnel failed", zap.Error(err))
-		return
-	}
-	if sessionID == 0 {
-		c.logger.Error("tunnel allocation failed")
 		return
 	}
 
@@ -72,21 +62,21 @@ func (c *Client) handleForwardConn(ctx context.Context, conn net.Conn, fwd confi
 		zap.String("local", conn.RemoteAddr().String()),
 		zap.String("remote", fmt.Sprintf("%s/%s", fwd.RemoteClient, fwd.RemoteService)))
 
-	// Forward local -> server
 	c.forwardLocalToServer(sessionID, conn)
 }
 
-func (c *Client) openTunnel(targetClient, targetService, protocol string) (uint32, error) {
-	pendingKey := targetClient + "/" + targetService
+func (c *Client) openTunnel(ctx context.Context, targetClient, targetService, protocol string) (uint32, error) {
+	// Allocate a unique request ID for this tunnel open request.
+	reqID := atomic.AddUint32(&c.nextReqID, 1)
 	ch := make(chan uint32, 1)
 
 	c.mu.Lock()
-	c.pending[pendingKey] = ch
+	c.pending[reqID] = ch
 	c.mu.Unlock()
 
 	defer func() {
 		c.mu.Lock()
-		delete(c.pending, pendingKey)
+		delete(c.pending, reqID)
 		c.mu.Unlock()
 	}()
 
@@ -99,18 +89,24 @@ func (c *Client) openTunnel(targetClient, targetService, protocol string) (uint3
 		return 0, err
 	}
 
-	if err := c.writer.WriteMessage(proto.NewMessage(proto.MsgOpenTunnel, 0, payload)); err != nil {
+	// Use reqID as SessionID so the server echoes it back in TunnelReady/TunnelFail,
+	// allowing us to match the response to this specific request.
+	if err := c.writer.WriteMessage(proto.NewMessage(proto.MsgOpenTunnel, reqID, payload)); err != nil {
 		return 0, fmt.Errorf("send open tunnel: %w", err)
 	}
 
-	// Wait up to 30 seconds for tunnel to be established
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(15 * time.Second)
 	defer timer.Stop()
 
 	select {
 	case sessionID := <-ch:
+		if sessionID == 0 {
+			return 0, fmt.Errorf("tunnel open failed (target unavailable)")
+		}
 		return sessionID, nil
 	case <-timer.C:
 		return 0, fmt.Errorf("tunnel open timeout")
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
 }

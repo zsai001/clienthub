@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -30,13 +31,20 @@ func New(addr, secret string, logger *zap.Logger) *Manager {
 	}
 }
 
-func (m *Manager) connect() (net.Conn, *tunnel.ConnWriter, error) {
+type adminConn struct {
+	conn   net.Conn
+	writer *tunnel.ConnWriter
+	br     *bufio.Reader
+}
+
+func (m *Manager) connect() (*adminConn, error) {
 	conn, err := net.DialTimeout("tcp", m.addr, 5*time.Second)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect to admin: %w", err)
+		return nil, fmt.Errorf("connect to admin: %w", err)
 	}
 
 	writer := tunnel.NewConnWriter(conn, m.cipher, m.logger)
+	br := tunnel.NewBufReader(conn)
 
 	token := crypto.ComputeAuthToken("manager", m.cipher.Key())
 	payload, _ := proto.EncodeJSON(&proto.AuthPayload{
@@ -45,34 +53,38 @@ func (m *Manager) connect() (net.Conn, *tunnel.ConnWriter, error) {
 	})
 	if err := writer.WriteMessage(proto.NewMessage(proto.MsgAuth, 0, payload)); err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("send auth: %w", err)
+		return nil, fmt.Errorf("send auth: %w", err)
 	}
 
-	resp, err := tunnel.ReadEncryptedMessage(conn, m.cipher)
+	resp, err := tunnel.ReadEncryptedMessage(br, m.cipher)
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("read auth response: %w", err)
+		return nil, fmt.Errorf("read auth response: %w", err)
 	}
 	if resp.Type != proto.MsgAuthOK {
 		conn.Close()
-		return nil, nil, fmt.Errorf("authentication failed")
+		return nil, fmt.Errorf("authentication failed")
 	}
 
-	return conn, writer, nil
+	return &adminConn{conn: conn, writer: writer, br: br}, nil
 }
 
-func (m *Manager) sendCommand(msgType proto.MsgType, payload []byte) (*proto.ResponsePayload, error) {
-	conn, writer, err := m.connect()
+// Response is an alias for proto.ResponsePayload, exported for use by the C bridge.
+type Response = proto.ResponsePayload
+
+// SendCommand sends an admin command and returns the parsed response.
+func (m *Manager) SendCommand(msgType proto.MsgType, payload []byte) (*proto.ResponsePayload, error) {
+	ac, err := m.connect()
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer ac.conn.Close()
 
-	if err := writer.WriteMessage(proto.NewMessage(msgType, 0, payload)); err != nil {
+	if err := ac.writer.WriteMessage(proto.NewMessage(msgType, 0, payload)); err != nil {
 		return nil, fmt.Errorf("send command: %w", err)
 	}
 
-	resp, err := tunnel.ReadEncryptedMessage(conn, m.cipher)
+	resp, err := tunnel.ReadEncryptedMessage(ac.br, m.cipher)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -89,8 +101,13 @@ func (m *Manager) sendCommand(msgType proto.MsgType, payload []byte) (*proto.Res
 	return result, nil
 }
 
-func (m *Manager) ListClients() error {
-	resp, err := m.sendCommand(proto.MsgListClients, nil)
+func (m *Manager) ListClients(speedTest bool) error {
+	var payload []byte
+	if speedTest {
+		fmt.Println("Running speed test, please wait...")
+		payload, _ = proto.EncodeJSON(&proto.ListClientsPayload{SpeedTest: true})
+	}
+	resp, err := m.SendCommand(proto.MsgListClients, payload)
 	if err != nil {
 		return err
 	}
@@ -100,29 +117,57 @@ func (m *Manager) ListClients() error {
 		return nil
 	}
 
-	var clients []proto.ClientInfo
-	if err := json.Unmarshal(resp.Data, &clients); err != nil {
-		return fmt.Errorf("decode clients: %w", err)
-	}
-
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tADDRESS\tSERVICES\tCONNECTED")
-	for _, c := range clients {
-		services := ""
-		for i, s := range c.Services {
-			if i > 0 {
-				services += ", "
-			}
-			services += fmt.Sprintf("%s(%s:%d)", s.Name, s.Protocol, s.Port)
+
+	if speedTest {
+		var clients []proto.ClientSpeedInfo
+		if err := json.Unmarshal(resp.Data, &clients); err != nil {
+			return fmt.Errorf("decode clients: %w", err)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Name, c.Addr, services, c.ConnectedAt)
+		fmt.Fprintln(w, "NAME\tADDRESS\tSERVICES\tRTT\tSPEED\tCONNECTED")
+		for _, c := range clients {
+			services := formatServices(c.Services)
+			rtt := "-"
+			if c.RTTMs >= 0 {
+				rtt = fmt.Sprintf("%dms", c.RTTMs)
+			}
+			speed := "-"
+			if c.ThroughputKBps >= 0 {
+				if c.ThroughputKBps >= 1024 {
+					speed = fmt.Sprintf("%.1fMB/s", float64(c.ThroughputKBps)/1024)
+				} else {
+					speed = fmt.Sprintf("%dKB/s", c.ThroughputKBps)
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", c.Name, c.Addr, services, rtt, speed, c.ConnectedAt)
+		}
+	} else {
+		var clients []proto.ClientInfo
+		if err := json.Unmarshal(resp.Data, &clients); err != nil {
+			return fmt.Errorf("decode clients: %w", err)
+		}
+		fmt.Fprintln(w, "NAME\tADDRESS\tSERVICES\tCONNECTED")
+		for _, c := range clients {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Name, c.Addr, formatServices(c.Services), c.ConnectedAt)
+		}
 	}
 	w.Flush()
 	return nil
 }
 
+func formatServices(services []proto.ServiceInfo) string {
+	s := ""
+	for i, svc := range services {
+		if i > 0 {
+			s += ", "
+		}
+		s += fmt.Sprintf("%s(%s:%d)", svc.Name, svc.Protocol, svc.Port)
+	}
+	return s
+}
+
 func (m *Manager) ListTunnels() error {
-	resp, err := m.sendCommand(proto.MsgListTunnels, nil)
+	resp, err := m.SendCommand(proto.MsgListTunnels, nil)
 	if err != nil {
 		return err
 	}
@@ -149,7 +194,7 @@ func (m *Manager) ListTunnels() error {
 
 func (m *Manager) KickClient(name string) error {
 	payload, _ := proto.EncodeJSON(&proto.KickPayload{ClientName: name})
-	resp, err := m.sendCommand(proto.MsgKickClient, payload)
+	resp, err := m.SendCommand(proto.MsgKickClient, payload)
 	if err != nil {
 		return err
 	}
@@ -158,7 +203,7 @@ func (m *Manager) KickClient(name string) error {
 }
 
 func (m *Manager) Status() error {
-	resp, err := m.sendCommand(proto.MsgListClients, nil)
+	resp, err := m.SendCommand(proto.MsgListClients, nil) // no speed test for status
 	if err != nil {
 		return fmt.Errorf("server unreachable: %w", err)
 	}
@@ -168,7 +213,7 @@ func (m *Manager) Status() error {
 		_ = json.Unmarshal(resp.Data, &clients)
 	}
 
-	resp2, err := m.sendCommand(proto.MsgListTunnels, nil)
+	resp2, err := m.SendCommand(proto.MsgListTunnels, nil)
 	if err != nil {
 		return err
 	}
@@ -181,5 +226,134 @@ func (m *Manager) Status() error {
 	fmt.Printf("Server: %s (reachable)\n", m.addr)
 	fmt.Printf("Clients: %d\n", len(clients))
 	fmt.Printf("Active Tunnels: %d\n", len(tunnels))
+	return nil
+}
+
+func (m *Manager) AddForward(fromClient, listenAddr, toClient, toService, protocol string) error {
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	payload, _ := proto.EncodeJSON(&proto.AddForwardPayload{
+		ClientName:    fromClient,
+		ListenAddr:    listenAddr,
+		RemoteClient:  toClient,
+		RemoteService: toService,
+		Protocol:      protocol,
+	})
+	resp, err := m.SendCommand(proto.MsgAddForward, payload)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	fmt.Println(resp.Message)
+	return nil
+}
+
+func (m *Manager) RemoveForward(fromClient, listenAddr string) error {
+	payload, _ := proto.EncodeJSON(&proto.RemoveForwardPayload{
+		ClientName: fromClient,
+		ListenAddr: listenAddr,
+	})
+	resp, err := m.SendCommand(proto.MsgRemoveForward, payload)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	fmt.Println(resp.Message)
+	return nil
+}
+
+func (m *Manager) AddExpose(clientName, name, localAddr, protocol string) error {
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	payload, _ := proto.EncodeJSON(&proto.AddExposePayload{
+		ClientName: clientName,
+		Rule: proto.ExposeRule{
+			Name:      name,
+			LocalAddr: localAddr,
+			Protocol:  protocol,
+		},
+	})
+	resp, err := m.SendCommand(proto.MsgAddExpose, payload)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	fmt.Println(resp.Message)
+	return nil
+}
+
+func (m *Manager) RemoveExpose(clientName, serviceName string) error {
+	payload, _ := proto.EncodeJSON(&proto.RemoveExposePayload{
+		ClientName:  clientName,
+		ServiceName: serviceName,
+	})
+	resp, err := m.SendCommand(proto.MsgRemoveExpose, payload)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	fmt.Println(resp.Message)
+	return nil
+}
+
+func (m *Manager) ListExpose(clientName string) error {
+	var payload []byte
+	if clientName != "" {
+		payload, _ = proto.EncodeJSON(&proto.KickPayload{ClientName: clientName})
+	}
+	resp, err := m.SendCommand(proto.MsgListExpose, payload)
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.Message)
+	if len(resp.Data) == 0 {
+		return nil
+	}
+	var entries []proto.ExposeListEntry
+	if err := json.Unmarshal(resp.Data, &entries); err != nil {
+		return fmt.Errorf("decode expose list: %w", err)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CLIENT\tNAME\tLOCAL_ADDR\tPROTOCOL")
+	for _, e := range entries {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.ClientName, e.Rule.Name, e.Rule.LocalAddr, e.Rule.Protocol)
+	}
+	w.Flush()
+	return nil
+}
+
+func (m *Manager) ListForwards() error {
+	resp, err := m.SendCommand(proto.MsgListForwards, nil)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(resp.Message)
+	if len(resp.Data) == 0 {
+		return nil
+	}
+
+	var forwards []proto.ForwardInfo
+	if err := json.Unmarshal(resp.Data, &forwards); err != nil {
+		return fmt.Errorf("decode forwards: %w", err)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CLIENT\tLISTEN\tTARGET\tSERVICE\tPROTOCOL")
+	for _, f := range forwards {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			f.ClientName, f.ListenAddr, f.RemoteClient, f.RemoteService, f.Protocol)
+	}
+	w.Flush()
 	return nil
 }

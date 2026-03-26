@@ -1,6 +1,8 @@
 package tunnel
 
 import (
+	"bufio"
+	"encoding/binary"
 	"io"
 	"net"
 	"sync"
@@ -9,6 +11,8 @@ import (
 	"github.com/cltx/clienthub/pkg/proto"
 	"go.uber.org/zap"
 )
+
+const readBufSize = 64 * 1024
 
 type ConnWriter struct {
 	mu     sync.Mutex
@@ -23,17 +27,14 @@ func NewConnWriter(conn net.Conn, cipher *crypto.Cipher, logger *zap.Logger) *Co
 
 func (cw *ConnWriter) WriteMessage(msg *proto.Message) error {
 	raw := msg.Encode()
-
 	encrypted, err := cw.cipher.Encrypt(raw)
 	if err != nil {
 		return err
 	}
 
+	// 4-byte big-endian length prefix + encrypted payload, written in one call.
 	frame := make([]byte, 4+len(encrypted))
-	frame[0] = byte(len(encrypted) >> 24)
-	frame[1] = byte(len(encrypted) >> 16)
-	frame[2] = byte(len(encrypted) >> 8)
-	frame[3] = byte(len(encrypted))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(encrypted)))
 	copy(frame[4:], encrypted)
 
 	cw.mu.Lock()
@@ -42,13 +43,20 @@ func (cw *ConnWriter) WriteMessage(msg *proto.Message) error {
 	return err
 }
 
+// NewBufReader wraps a net.Conn in a bufio.Reader for efficient reads.
+func NewBufReader(conn net.Conn) *bufio.Reader {
+	return bufio.NewReaderSize(conn, readBufSize)
+}
+
+// ReadEncryptedMessage reads one framed encrypted message from r.
+// r should be a *bufio.Reader wrapping the connection for best performance.
 func ReadEncryptedMessage(r io.Reader, cipher *crypto.Cipher) (*proto.Message, error) {
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(r, lenBuf); err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, err
 	}
 
-	frameLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+	frameLen := int(binary.BigEndian.Uint32(lenBuf[:]))
 	if frameLen <= 0 || frameLen > proto.MaxPayloadSize+1024 {
 		return nil, proto.ErrInvalidMessage
 	}
