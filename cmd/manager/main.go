@@ -525,8 +525,55 @@ Use this as the "secret" field in server and client configs.`,
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "View or modify client configuration",
-		Long:  "View, set, or edit fields in a ClientHub config file.",
+		Short: "View or modify hubctl / client configuration",
+		Long: `View, set, or edit configuration files.
+
+When called without subcommands, saves the hubctl manager config
+(admin address and secret) from -a and -s flags to hubctl.yaml.
+Use subcommands (show, set, init) to manage client config.`,
+		Example: `  # Save hubctl manager config
+  hubctl config -a 8.146.210.7:7902 -s "my-secret"
+
+  # Show current hubctl manager config
+  hubctl config`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfgPath := configFile
+			if cfgPath == "" {
+				home, _ := os.UserHomeDir()
+				cfgPath = filepath.Join(home, ".config", "clienthub", "hubctl.yaml")
+			}
+
+			// If flags provided, save them
+			if adminAddr != "" || secret != "" {
+				// Load existing config if present
+				raw := make(map[string]interface{})
+				if data, err := os.ReadFile(cfgPath); err == nil {
+					yaml.Unmarshal(data, &raw)
+				}
+				if adminAddr != "" {
+					raw["admin_addr"] = adminAddr
+				}
+				if secret != "" {
+					raw["secret"] = secret
+				}
+				out, _ := yaml.Marshal(raw)
+				os.MkdirAll(filepath.Dir(cfgPath), 0755)
+				if err := os.WriteFile(cfgPath, out, 0644); err != nil {
+					return fmt.Errorf("write config: %w", err)
+				}
+				fmt.Printf("Config saved to %s\n", cfgPath)
+				return nil
+			}
+
+			// No flags: show current config
+			data, err := os.ReadFile(cfgPath)
+			if err != nil {
+				return fmt.Errorf("no hubctl config found at %s\nUse: hubctl config -a <addr> -s <secret>", cfgPath)
+			}
+			fmt.Printf("# %s\n", cfgPath)
+			fmt.Print(string(data))
+			return nil
+		},
 	}
 
 	cmd.AddCommand(configShowCmd())
